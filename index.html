@@ -188,7 +188,6 @@
 
   <div class="stagecol">
     <div class="stage" id="stage" tabindex="0" aria-label="금속 보이스 박스. 화살표로 볼륨, 스페이스로 재생">
-      <div class="cam-tip">표면 위에서 오른쪽·위 = 볼륨 크게 · 왼쪽·아래 = 작게 · 탭 = 재생<br>휠 = 확대·축소 · 오른쪽 위 박스를 끌면 360도 회전</div>
       <div class="loading" id="loading">금속 표면을 준비하는 중…</div>
     </div>
     <div class="hud">
@@ -327,7 +326,7 @@ let SHAPE = 'cube';
 const SPAN = 1.55;            // 구 : 격자가 덮는 각도 (라디안, 약 89°)
 const CELL = SPAN/15;         // 구 : 한 칸의 각도 (위도·경도 방향 동일)
 const SPH_D = 0.3;            // 구 : 칸(핀) 깊이
-const SPH_EXT = 0.5;
+const SPH_EXT = 0.25;         // 구 : 돌출을 이전의 50%로 (정육면체 원래 값의 1/4)
 const CUBE_EXT = 0.7;        // 정육면체 돌출을 30% 줄임          // 구에서는 돌출을 정육면체의 절반으로
 // 격자 좌표(x, y) → 구 표면 방향
 function sphDir(x, y, out){
@@ -747,14 +746,17 @@ let actx = null, gainNode = null, analyser = null, freqBuf = null, timeBuf = nul
 const buffers = {};
 let curKey = 's1', src = null, playing = false, startAt = 0, offset = 0, userName = '';
 let vol = 0.40;
-const volToGain = v => v*v;
+const VOL_FLOOR = 0.2;                       // 볼륨을 0으로 내려도 최대의 약 2/10 크기는 들림
+const volToGain = v => { const p = VOL_FLOOR + (1-VOL_FLOOR)*v; return p*p; };
 function ensureAudio(){
   if (!actx){
     const AC = window.AudioContext || window.webkitAudioContext;
     actx = new AC();
     gainNode = actx.createGain(); gainNode.gain.value = volToGain(vol);
     analyser = actx.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.3;
-    gainNode.connect(analyser); analyser.connect(actx.destination);
+    gainNode.connect(actx.destination);
+    // 분석기는 볼륨(게인) 앞에서 원음을 듣는다 → 볼륨을 줄여도 자동 움직임이 유지됨
+    const sink = actx.createGain(); sink.gain.value = 0; analyser.connect(sink); sink.connect(actx.destination);
     freqBuf = new Float32Array(analyser.frequencyBinCount); timeBuf = new Float32Array(analyser.fftSize);
   }
   if (actx.state === 'suspended') actx.resume();
@@ -773,9 +775,9 @@ async function play(){
   const buf = await getBuffer(curKey); if (!buf) return;
   offset = offset % buf.duration;
   stopSrc();
-  const s = actx.createBufferSource(); s.buffer = buf; s.loop = true; s.connect(gainNode);
+  const s = actx.createBufferSource(); s.buffer = buf; s.loop = true; s.connect(gainNode); s.connect(analyser);
   s.start(0, offset); startAt = actx.currentTime - offset; src = s; playing = true;
-  syncUI(); say(`<b>${nameOf(curKey)}</b> 반복 재생 중. 소리에 따라 금속 칸이 군데군데 튀어나옵니다.`);
+  syncUI(); say(`<b>${nameOf(curKey)}</b> 반복 재생 중. 소리에 따라 인터렉티브하게 반응합니다.`);
 }
 function stopSrc(){ if (src){ const s = src; src = null; try{ s.stop(); }catch(e){} } }
 function pause(){
@@ -982,7 +984,7 @@ cv.addEventListener('pointerdown', e => {
   }
   if (!pointerToFace(e)) return;
   ensureAudio();
-  F.pressed = true; F.travel = 0; F.want = true; F.over = true;
+  F.pressed = true; F.travel = 0; F.downT = performance.now(); F.want = true; F.over = true;
   F.lastX = F.x; F.lastY = F.y; F.track = true;
   if (e.pointerType !== 'mouse'){ F.sx = F.x; F.sy = F.y; }
   setStageCursor(); e.preventDefault();
@@ -1029,7 +1031,7 @@ function endPointer(e){
     return;
   }
   F.pressed = false;
-  if (e.type === 'pointerup' && (F.travel||0) < PITCH*0.35) togglePlay();
+  if (e.type === 'pointerup' && (F.travel||0) < PITCH*0.25 && performance.now() - (F.downT||0) < 350) togglePlay();
   if (F.type !== 'mouse') sinkNow();
   else if (!pointerToFace(e)) sinkNow();
   setStageCursor();
@@ -1094,7 +1096,7 @@ function computeTargets(dt){
   voiceUpdate(dt, voiceRest <= 0);
   for (const q of notes){
     const fade = 0.35 + 0.65*clamp(q.hold, 0, 1);
-    tgt[q.i] = Math.max(tgt[q.i], MAXV * q.h * fade);
+    tgt[q.i] = Math.max(tgt[q.i], MAXV * q.h * fade * (0.6 + 0.4*vol));
     gtg[q.i] = Math.max(gtg[q.i], (0.35 + 0.65*q.h) * fade); htg[q.i] = 0; mode[q.i] = 1;
   }
   // 2) 마우스 · 터치 : 그 칸이 솟고 가운데에서 불빛
